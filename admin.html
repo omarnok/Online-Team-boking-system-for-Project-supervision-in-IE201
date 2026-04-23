@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin - Bulk Import</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+    <nav class="navbar navbar-dark bg-danger">
+        <div class="container">
+            <span class="navbar-brand mb-0 h1">⚙️ Admin Panel</span>
+            <a href="index.html" class="btn btn-outline-light btn-sm">Back to Portal</a>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">Bulk Import Teams (CSV)</div>
+                    <div class="card-body">
+                        <p class="text-muted small">Format: <code>section_number,team_number,email</code><br>
+                        Example: <code>1,5,team@email.com</code></p>
+                        <textarea id="csvInput" class="form-control mb-3" rows="8" placeholder="1,1,team1@uni.edu
+1,2,team2@uni.edu
+2,1,team3@uni.edu"></textarea>
+                        <button onclick="bulkImport()" class="btn btn-danger w-100">Import Teams</button>
+                        <div id="importResult" class="mt-2"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">Add New Professor</div>
+                    <div class="card-body">
+                        <input type="text" id="newProfName" class="form-control mb-2" placeholder="Name">
+                        <input type="email" id="newProfEmail" class="form-control mb-2" placeholder="Email">
+                        <input type="text" id="newProfPin" class="form-control mb-2" placeholder="4-digit PIN" maxlength="4">
+                        <button onclick="addProfessor()" class="btn btn-primary w-100">Add Professor</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- Management Panels -->
+        <div class="row mt-4">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span>Manage Professors</span>
+                        <button onclick="loadAdminLists()" class="btn btn-sm btn-outline-secondary">Refresh</button>
+                    </div>
+                    <div class="card-body">
+                        <div id="profList" class="list-group" style="max-height: 300px; overflow-y: auto;">
+                            <div class="list-group-item text-muted">Loading...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span>Manage Teams</span>
+                        <button onclick="loadAdminLists()" class="btn btn-sm btn-outline-secondary">Refresh</button>
+                    </div>
+                    <div class="card-body">
+                        <div id="teamList" class="list-group" style="max-height: 300px; overflow-y: auto;">
+                            <div class="list-group-item text-muted">Loading...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>    
+     </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
