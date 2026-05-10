@@ -1,12 +1,11 @@
 // ==================== CONFIGURATION ====================
-const SUPABASE_URL = 'https://riwnvkgpgnthgothfzoh.supabase.co'; // ← REPLACE THIS
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJpd252a2dwZ250aGdvdGhmem9oIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4ODQxNTYsImV4cCI6MjA5MjQ2MDE1Nn0.xjQLBczNCaoC0egNLWw8c1_KfHy1p2PAqS9ZHcZMD18'; // REPLACE THIS
+const SUPABASE_URL = 'https://riwnvkgpgnthgothfzoh.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJpd252a2dwZ250aGdvdGhmem9oIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4ODQxNTYsImV4cCI6MjA5MjQ2MDE1Nn0.xjQLBczNCaoC0egNLWw8c1_KfHy1p2PAqS9ZHcZMD18';
+
+// Telegram webhook server (running locally or hosted)
+const WEBHOOK_URL = 'http://localhost:5001/webhook';
 
 const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-
-if (SUPABASE_URL.includes('YOUR_PROJECT_ID')) {
-    console.error('WARNING: You must replace SUPABASE_URL and SUPABASE_KEY with your real values!');
-}
 
 let currentTeam = null;
 let currentProf = null;
@@ -51,18 +50,37 @@ function downloadICS(filename, content) {
     URL.revokeObjectURL(url);
 }
 
+// ==================== WEBHOOK HELPERS ====================
+async function notifyWebhook(endpoint, payload) {
+    try {
+        await fetch(`${WEBHOOK_URL}/${endpoint}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+    } catch (e) {
+        console.log('Webhook offline (expected if local):', e);
+    }
+}
+
 // ==================== TEAM PORTAL ====================
 async function identifyTeam() {
     const sec = parseInt(document.getElementById('sectionNum').value);
     const team = parseInt(document.getElementById('teamNum').value);
-    const email = document.getElementById('teamEmail').value;
+    const telegramId = document.getElementById('teamTelegram')?.value || '';
     
     if (!sec || !team) return alert('Enter section and team numbers');
     
+    const displayName = `S${sec}T${team}`;
+    
     const {data, error} = await db
         .from('teams')
-        .upsert({section_number: sec, team_number: team, email: email}, 
-                {onConflict: 'section_number,team_number'})
+        .upsert({
+            section_number: sec, 
+            team_number: team, 
+            display_name: displayName,
+            telegram_id: telegramId
+        }, {onConflict: 'section_number,team_number'})
         .select().single();
     
     if (error) return alert('Error: ' + error.message);
@@ -99,12 +117,14 @@ async function loadSlots() {
         return;
     }
     
+    // Get reservations for these slots
     const {data: reservations} = await db
         .from('reservations')
-        .select('*, team:teams(display_name)')
+        .select('*, team:teams(display_name,telegram_id)')
         .in('slot_id', slots.map(s => s.id))
         .neq('status', 'cancelled');
     
+    // Get waiting list counts
     const {data: waiting} = await db
         .from('waiting_list')
         .select('*')
@@ -114,8 +134,8 @@ async function loadSlots() {
     slots.forEach(slot => {
         const res = reservations?.find(r => r.slot_id === slot.id);
         const waitCount = waiting?.filter(w => w.slot_id === slot.id).length || 0;
-        const type = slot.availability.consultation_type;
-        const loc = slot.availability.location_details;
+        const type = slot.availability?.consultation_type || 'in-person';
+        const loc = slot.availability?.location_details || 'TBD';
         
         const card = document.createElement('div');
         card.className = 'col-md-4';
@@ -147,31 +167,71 @@ async function preBook(slotId, type, loc) {
     const {data: slot} = await db.from('slots').select('*, professor:professors(*), availability(*)').eq('id', slotId).single();
     selectedSlot.details = slot;
     
-    const {data: existing} = await db
+    // Check for existing confirmed booking with THIS professor
+    const {data: existingSameProf} = await db
         .from('reservations')
         .select('*, slot:slots(slot_date)')
         .eq('team_id', currentTeam.id)
         .eq('professor_id', slot.professor_id)
         .eq('slot.slot_date', slot.slot_date)
-        .neq('status', 'cancelled');
+        .eq('status', 'confirmed');
+    
+    // Check for existing confirmed booking with ANY professor
+    const {data: existingAnyProf} = await db
+        .from('reservations')
+        .select('*, professor:professors(name), slot:slots(*)')
+        .eq('team_id', currentTeam.id)
+        .eq('status', 'confirmed');
     
     document.getElementById('modalTeam').textContent = currentTeam.display_name;
     document.getElementById('modalTime').textContent = `${fmtDate(slot.slot_date)} ${fmtTime(slot.start_time)} - ${fmtTime(slot.end_time)}`;
     document.getElementById('modalType').textContent = `${type} (${loc})`;
     
     const dupWarn = document.getElementById('duplicateWarning');
-    if (existing && existing.length > 0) {
+    
+    if (existingSameProf && existingSameProf.length > 0) {
+        // Same professor, same day = always pending
+        dupWarn.innerHTML = `?? You already have a booking with this professor on this day. This request will be sent for professor approval.`;
         dupWarn.classList.remove('d-none');
         selectedSlot.isDuplicate = true;
+        selectedSlot.duplicateType = 'same-day';
+    } else if (existingAnyProf && existingAnyProf.length > 0) {
+        // Different professor = check for override
+        const otherProf = existingAnyProf[0].professor;
+        const {data: override} = await db
+            .from('registration_overrides')
+            .select('*')
+            .eq('team_id', currentTeam.id)
+            .eq('professor_id', slot.professor_id)
+            .single();
+        
+        if (!override) {
+            dupWarn.innerHTML = `?? You are already booked with Professor ${otherProf.name}. You need professor permission to book with multiple professors. <a href="/waitlist.html?prof=${slot.professor_id}" class="alert-link">Join waiting list instead</a>.`;
+            dupWarn.classList.remove('d-none');
+            selectedSlot.isDuplicate = true;
+            selectedSlot.duplicateType = 'other-prof';
+            selectedSlot.blocked = true;
+        } else {
+            dupWarn.classList.add('d-none');
+            selectedSlot.isDuplicate = false;
+            selectedSlot.blocked = false;
+        }
     } else {
         dupWarn.classList.add('d-none');
         selectedSlot.isDuplicate = false;
+        selectedSlot.blocked = false;
     }
     
     new bootstrap.Modal(document.getElementById('bookModal')).show();
 }
 
 async function confirmBooking() {
+    if (selectedSlot.blocked) {
+        alert('You cannot book without professor permission. Join the waiting list instead.');
+        bootstrap.Modal.getInstance(document.getElementById('bookModal')).hide();
+        return;
+    }
+    
     const slot = selectedSlot.details;
     
     const insert = {
@@ -191,35 +251,26 @@ async function confirmBooking() {
     
     bootstrap.Modal.getInstance(document.getElementById('bookModal')).hide();
     
-    const prof = slot.professor;
-    const icsContent = generateICS(slot, prof, currentTeam, selectedSlot.type, selectedSlot.loc);
-    
-    const subject = encodeURIComponent(`Consultation Confirmed: ${currentTeam.display_name}`);
-    const body = encodeURIComponent(`Team ${currentTeam.display_name},
-
-Your consultation is ${selectedSlot.isDuplicate ? 'PENDING APPROVAL' : 'CONFIRMED'}:
-Professor: ${prof.name}
-Date: ${fmtDate(slot.slot_date)}
-Time: ${fmtTime(slot.start_time)} - ${fmtTime(slot.end_time)}
-Type: ${selectedSlot.type}
-Location: ${selectedSlot.loc}
-
-${selectedSlot.isDuplicate ? 'You will receive an email once the professor approves this duplicate request.' : 'Please arrive 5 minutes early.'}`);
-    
-    const mailto = `mailto:${currentTeam.email || ''}?subject=${subject}&body=${body}`;
+    // Send Telegram notification via webhook
+    await notifyWebhook('booking', {
+        team_name: currentTeam.display_name,
+        professor_name: slot.professor.name,
+        slot_time: `${fmtDate(slot.slot_date)} ${fmtTime(slot.start_time)}`,
+        team_telegram: currentTeam.telegram_id,
+        project: currentTeam.project || 'N/A',
+        is_duplicate: selectedSlot.isDuplicate
+    });
     
     const msg = selectedSlot.isDuplicate 
         ? 'Duplicate request submitted for professor approval.' 
-        : 'Booking confirmed!';
+        : 'Booking confirmed! Check your Telegram.';
     
     alert(msg);
     
     if (!selectedSlot.isDuplicate) {
         if (confirm('Download calendar invite (.ics)?')) {
+            const icsContent = generateICS(slot, slot.professor, currentTeam, selectedSlot.type, selectedSlot.loc);
             downloadICS(`consultation-${currentTeam.display_name}.ics`, icsContent);
-        }
-        if (confirm('Open email template?')) {
-            window.open(mailto, '_blank');
         }
     }
     
@@ -229,11 +280,108 @@ ${selectedSlot.isDuplicate ? 'You will receive an email once the professor appro
 async function joinWaitingList(slotId) {
     const {error} = await db.from('waiting_list').insert({
         slot_id: slotId,
-        team_id: currentTeam.id
+        team_id: currentTeam.id,
+        status: 'waiting'
     });
     if (error) return alert('Already on waiting list or error: ' + error.message);
     alert('Added to waiting list!');
     loadSlots();
+}
+
+// ==================== LOOKUP & FEEDBACK ====================
+async function lookupTeam() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const sec = urlParams.get('section');
+    const teamNum = urlParams.get('team');
+    
+    if (!sec || !teamNum) return;
+    
+    const {data: teams} = await db
+        .from('teams')
+        .select('*, reservations(*, slot:slots(*), professor:professors(name))')
+        .eq('section_number', sec)
+        .eq('team_number', teamNum);
+    
+    if (!teams || !teams.length) {
+        document.getElementById('lookupResult').innerHTML = '<div class="alert alert-warning">No bookings found.</div>';
+        return;
+    }
+    
+    const team = teams[0];
+    let html = `<h4>${team.display_name}</h4>`;
+    
+    if (team.reservations && team.reservations.length > 0) {
+        team.reservations.forEach(r => {
+            if (r.status === 'cancelled') return;
+            html += `
+                <div class="card mb-2">
+                    <div class="card-body">
+                        <p><strong>Professor:</strong> ${r.professor?.name || 'Unknown'}</p>
+                        <p><strong>Date:</strong> ${fmtDate(r.slot?.slot_date)} ${fmtTime(r.slot?.start_time)} - ${fmtTime(r.slot?.end_time)}</p>
+                        <p><strong>Status:</strong> <span class="badge bg-${r.status === 'confirmed' ? 'success' : 'warning'}">${r.status}</span></p>
+                        ${r.status === 'confirmed' ? `
+                            <button onclick="openFeedback('${r.id}', '${r.professor_id}', '${r.slot_id}')" class="btn btn-sm btn-primary">Submit Feedback</button>
+                            <button onclick="downloadBookingICS('${r.slot_id}')" class="btn btn-sm btn-outline-secondary">?? Calendar</button>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+        });
+    } else {
+        html += '<p>No active bookings.</p>';
+    }
+    
+    document.getElementById('lookupResult').innerHTML = html;
+}
+
+function openFeedback(resId, profId, slotId) {
+    document.getElementById('feedbackResId').value = resId;
+    document.getElementById('feedbackProfId').value = profId;
+    document.getElementById('feedbackSlotId').value = slotId;
+    new bootstrap.Modal(document.getElementById('feedbackModal')).show();
+}
+
+async function submitFeedback() {
+    const resId = document.getElementById('feedbackResId').value;
+    const profId = document.getElementById('feedbackProfId').value;
+    const slotId = document.getElementById('feedbackSlotId').value;
+    const rating = parseInt(document.getElementById('feedbackRating').value);
+    const text = document.getElementById('feedbackText').value;
+    
+    if (!rating) return alert('Please select a rating');
+    
+    const {error} = await db.from('feedback').insert({
+        team_id: currentTeam?.id,
+        professor_id: profId,
+        slot_id: slotId,
+        rating: rating,
+        feedback_text: text
+    });
+    
+    if (error) return alert('Error: ' + error.message);
+    
+    // Get professor name for webhook
+    const {data: prof} = await db.from('professors').select('name').eq('id', profId).single();
+    
+    // Notify admin via webhook
+    await notifyWebhook('feedback', {
+        team_name: currentTeam?.display_name || 'Unknown',
+        professor_name: prof?.name || 'Unknown',
+        rating: rating,
+        feedback_text: text
+    });
+    
+    bootstrap.Modal.getInstance(document.getElementById('feedbackModal')).hide();
+    alert('Feedback submitted! Thank you.');
+    lookupTeam(); // Refresh
+}
+
+async function downloadBookingICS(slotId) {
+    const {data: slot} = await db.from('slots').select('*, professor:professors(*), availability(*)').eq('id', slotId).single();
+    if (!slot) return;
+    
+    const ics = generateICS(slot, slot.professor, currentTeam, slot.availability?.consultation_type || 'in-person', slot.availability?.location_details || '');
+    downloadICS(`consultation-${currentTeam.display_name}.ics`, ics);
 }
 
 // ==================== PROFESSOR DASHBOARD ====================
@@ -301,7 +449,7 @@ async function addAvailability() {
 async function loadProfSlots() {
     const {data: slots} = await db
         .from('slots')
-        .select('*, availability(consultation_type,location_details), reservations(*, team:teams(display_name,email))')
+        .select('*, availability(consultation_type,location_details), reservations(*, team:teams(display_name,telegram_id))')
         .eq('professor_id', currentProf.id)
         .order('slot_date', {ascending: false})
         .order('start_time');
@@ -318,11 +466,20 @@ async function loadProfSlots() {
                         <div class="d-flex justify-content-between align-items-start">
                             <div>
                                 <strong>${fmtDate(s.slot_date)}</strong> ${fmtTime(s.start_time)}-${fmtTime(s.end_time)}
-                                <span class="badge bg-${s.availability.consultation_type==='online'?'info':'secondary'}">${s.availability.consultation_type}</span>
+                                <span class="badge bg-${s.availability?.consultation_type==='online'?'info':'secondary'}">${s.availability?.consultation_type || 'in-person'}</span>
                             </div>
-                            <button onclick="deleteSlot('${s.id}')" class="btn btn-sm btn-outline-danger" title="Delete slot">🗑️</button>
+                            <button onclick="deleteSlot('${s.id}')" class="btn btn-sm btn-outline-danger" title="Delete slot">???</button>
                         </div>
-                        ${res ? `<div class="small mt-1">Booked by: ${res.team?.display_name} (${res.team?.email}) ${res.is_duplicate ? '<span class="text-warning">[PENDING]</span>' : ''}</div>` : '<div class="small text-success mt-1">Free slot</div>'}
+                        ${res ? `
+                            <div class="small mt-1">
+                                Booked by: ${res.team?.display_name} 
+                                ${res.team?.telegram_id ? `<span class="badge bg-info">?? ${res.team.telegram_id}</span>` : ''}
+                                ${res.status === 'pending' ? '<span class="badge bg-warning">PENDING</span>' : ''}
+                                ${res.is_duplicate ? '<span class="badge bg-warning">[DUPLICATE]</span>' : ''}
+                            </div>
+                            <button onclick="cancelReservation('${res.id}', '${s.id}')" class="btn btn-sm btn-outline-danger mt-1">Cancel</button>
+                            <button onclick="approveReservation('${res.id}')" class="btn btn-sm btn-outline-success mt-1 ${res.status === 'confirmed' ? 'd-none' : ''}">Approve</button>
+                        ` : '<div class="small text-success mt-1">Free slot</div>'}
                     </div>
                 </div>
             </div>
@@ -341,9 +498,22 @@ async function deleteSlot(id) {
 async function cancelReservation(resId, slotId) {
     if (!confirm('Cancel this reservation? First waiting list entry will be auto-promoted.')) return;
     
+    // Get team info before cancelling for notification
+    const {data: res} = await db.from('reservations').select('*, team:teams(*)').eq('id', resId).single();
+    
     await db.from('reservations').update({status: 'cancelled'}).eq('id', resId);
     await db.from('slots').update({is_booked: false}).eq('id', slotId);
     
+    // Notify team via webhook
+    if (res?.team?.telegram_id) {
+        await notifyWebhook('cancel', {
+            team_name: res.team.display_name,
+            team_telegram: res.team.telegram_id,
+            slot_time: `${fmtDate(res.slot?.slot_date)} ${fmtTime(res.slot?.start_time)}`
+        });
+    }
+    
+    // Auto-promote from waiting list
     const {data: waits} = await db
         .from('waiting_list')
         .select('*, team:teams(*)')
@@ -362,11 +532,48 @@ async function cancelReservation(resId, slotId) {
         });
         await db.from('slots').update({is_booked: true}).eq('id', slotId);
         await db.from('waiting_list').update({status: 'accepted'}).eq('id', w.id);
+        
+        // Notify promoted team
+        if (w.team?.telegram_id) {
+            const {data: slot} = await db.from('slots').select('*, professor:professors(name)').eq('id', slotId).single();
+            await notifyWebhook('booking', {
+                team_name: w.team.display_name,
+                professor_name: slot.professor.name,
+                slot_time: `${fmtDate(slot.slot_date)} ${fmtTime(slot.start_time)}`,
+                team_telegram: w.team.telegram_id,
+                project: w.team.project || 'N/A',
+                is_duplicate: false
+            });
+        }
+        
         alert(`Auto-promoted team ${w.team.display_name} from waiting list!`);
     }
     
     loadProfSlots();
     loadWaiting();
+}
+
+async function approveReservation(resId) {
+    const {data: res} = await db.from('reservations').select('*, slot:slots(*), team:teams(*), professor:professors(*)').eq('id', resId).single();
+    
+    await db.from('reservations').update({status: 'confirmed', is_duplicate: false}).eq('id', resId);
+    await db.from('slots').update({is_booked: true}).eq('id', res.slot.id);
+    
+    // Notify team
+    if (res?.team?.telegram_id) {
+        await notifyWebhook('booking', {
+            team_name: res.team.display_name,
+            professor_name: res.professor.name,
+            slot_time: `${fmtDate(res.slot.slot_date)} ${fmtTime(res.slot.start_time)}`,
+            team_telegram: res.team.telegram_id,
+            project: res.team.project || 'N/A',
+            is_duplicate: false
+        });
+    }
+    
+    alert('Approved! Team notified via Telegram.');
+    loadPending();
+    loadProfSlots();
 }
 
 async function loadPending() {
@@ -388,21 +595,15 @@ async function loadPending() {
         div.innerHTML += `
             <div class="list-group-item d-flex justify-content-between align-items-center">
                 <div>
-                    <strong>${r.team.display_name}</strong> wants ${fmtDate(r.slot.slot_date)} ${fmtTime(r.slot.start_time)}
+                    <strong>${r.team.display_name}</strong> 
+                    ${r.team.telegram_id ? `<span class="badge bg-info">?? ${r.team.telegram_id}</span>` : ''}
+                    <br><small>${fmtDate(r.slot.slot_date)} ${fmtTime(r.slot.start_time)}</small>
+                    ${r.is_duplicate ? '<br><span class="badge bg-warning">Duplicate request</span>' : ''}
                 </div>
                 <button onclick="approveReservation('${r.id}')" class="btn btn-sm btn-success">Approve</button>
             </div>
         `;
     });
-}
-
-async function approveReservation(resId) {
-    const {data: res} = await db.from('reservations').select('*, slot:slots(*)').eq('id', resId).single();
-    await db.from('reservations').update({status: 'confirmed', is_duplicate: false}).eq('id', resId);
-    await db.from('slots').update({is_booked: true}).eq('id', res.slot.id);
-    alert('Approved!');
-    loadPending();
-    loadProfSlots();
 }
 
 async function loadWaiting() {
@@ -437,8 +638,14 @@ async function loadWaiting() {
     waits.forEach(w => {
         div.innerHTML += `
             <div class="list-group-item">
-                <strong>${w.team.display_name}</strong> waiting for ${fmtDate(w.slot.slot_date)} ${fmtTime(w.slot.start_time)}
-                <span class="badge bg-secondary float-end">${new Date(w.requested_at).toLocaleTimeString()}</span>
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <strong>${w.team.display_name}</strong>
+                        ${w.team.telegram_id ? `<span class="badge bg-info">?? ${w.team.telegram_id}</span>` : ''}
+                        <br><small>Waiting for ${fmtDate(w.slot.slot_date)} ${fmtTime(w.slot.start_time)}</small>
+                    </div>
+                    <span class="badge bg-secondary">${new Date(w.requested_at).toLocaleTimeString()}</span>
+                </div>
             </div>
         `;
     });
@@ -462,8 +669,16 @@ async function bulkImport() {
     const lines = text.split('\n');
     const teams = [];
     for (let line of lines) {
-        const [sec, team, email] = line.split(',').map(s => s.trim());
-        if (sec && team) teams.push({section_number: parseInt(sec), team_number: parseInt(team), email: email || null});
+        const [sec, team, telegramId] = line.split(',').map(s => s.trim());
+        if (sec && team) {
+            const displayName = `S${sec}T${team}`;
+            teams.push({
+                section_number: parseInt(sec), 
+                team_number: parseInt(team), 
+                display_name: displayName,
+                telegram_id: telegramId || null
+            });
+        }
     }
     
     const {data, error} = await db.from('teams').upsert(teams, {onConflict: 'section_number,team_number'});
@@ -477,14 +692,20 @@ async function addProfessor() {
     const name = document.getElementById('newProfName').value.trim();
     const email = document.getElementById('newProfEmail').value.trim();
     const pin = document.getElementById('newProfPin').value.trim();
+    const telegramId = document.getElementById('newProfTelegram')?.value?.trim() || '';
     
     if (!name || !email || !pin) {
-        alert('Please fill in all fields');
+        alert('Please fill in all required fields');
         return;
     }
     
     try {
-        const {error} = await db.from('professors').insert({name, email, pin});
+        const {error} = await db.from('professors').insert({
+            name, 
+            email, 
+            pin,
+            telegram_id: telegramId || null
+        });
         if (error) {
             alert('Database error: ' + error.message);
             console.error(error);
@@ -494,6 +715,7 @@ async function addProfessor() {
         document.getElementById('newProfName').value = '';
         document.getElementById('newProfEmail').value = '';
         document.getElementById('newProfPin').value = '';
+        if (document.getElementById('newProfTelegram')) document.getElementById('newProfTelegram').value = '';
         loadAdminLists();
     } catch (err) {
         console.error(err);
@@ -531,6 +753,7 @@ async function loadAdminLists() {
                         <div>
                             <div class="fw-bold">${p.name}</div>
                             <div class="small text-muted">${p.email}</div>
+                            ${p.telegram_id ? `<div class="small text-info">?? ${p.telegram_id}</div>` : ''}
                         </div>
                         <button onclick="deleteProfessor('${p.id}')" class="btn btn-sm btn-outline-danger">Delete</button>
                     </div>
@@ -551,6 +774,7 @@ async function loadAdminLists() {
                         <div>
                             <div class="fw-bold">${t.display_name}</div>
                             <div class="small text-muted">${t.email || 'No email'}</div>
+                            ${t.telegram_id ? `<div class="small text-info">?? ${t.telegram_id}</div>` : ''}
                         </div>
                         <button onclick="deleteTeam('${t.id}')" class="btn btn-sm btn-outline-danger">Delete</button>
                     </div>
@@ -570,5 +794,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     if (document.getElementById('profList')) {
         loadAdminLists();
+    }
+    
+    // Lookup page init
+    if (document.getElementById('lookupResult')) {
+        lookupTeam();
     }
 });

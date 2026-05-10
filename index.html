@@ -9,8 +9,11 @@
 <body class="bg-light">
     <nav class="navbar navbar-dark bg-primary">
         <div class="container">
-            <span class="navbar-brand mb-0 h1">📅 Project Consultation Scheduler</span>
-            <a href="professor.html" class="btn btn-outline-light btn-sm">Professor Login</a>
+            <span class="navbar-brand mb-0 h1">?? Project Consultation Scheduler</span>
+            <div>
+                <a href="lookup.html" class="btn btn-outline-light btn-sm me-2">?? Lookup</a>
+                <a href="professor.html" class="btn btn-outline-light btn-sm">Professor Login</a>
+            </div>
         </div>
     </nav>
 
@@ -31,8 +34,9 @@
                         <input type="number" id="teamNum" class="form-control" min="1" required>
                     </div>
                     <div class="col-md-4">
-                        <label class="form-label">Team Email</label>
-                        <input type="email" id="teamEmail" class="form-control" placeholder="team@university.edu">
+                        <label class="form-label">Telegram ID</label>
+                        <input type="text" id="teamTelegram" class="form-control" placeholder="@username or 123456789">
+                        <div class="form-text">Enter your Telegram username (with @) or numeric ID</div>
                     </div>
                     <div class="col-md-2 d-flex align-items-end">
                         <button onclick="identifyTeam()" class="btn btn-primary w-100">Confirm</button>
@@ -81,8 +85,7 @@
                     <p>Time: <span id="modalTime"></span></p>
                     <p>Type: <span id="modalType"></span></p>
                     <div id="duplicateWarning" class="alert alert-warning d-none">
-                        ⚠️ You already have a booking with this professor on this day. 
-                        This request will be sent for professor approval.
+                        ?? You already have a booking. This request will be sent for professor approval.
                     </div>
                 </div>
                 <div class="modal-footer">

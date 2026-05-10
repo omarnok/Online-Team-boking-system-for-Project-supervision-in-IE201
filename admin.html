@@ -9,7 +9,7 @@
 <body class="bg-light">
     <nav class="navbar navbar-dark bg-danger">
         <div class="container">
-            <span class="navbar-brand mb-0 h1">⚙️ Admin Panel</span>
+            <span class="navbar-brand mb-0 h1">?? Admin Panel</span>
             <a href="index.html" class="btn btn-outline-light btn-sm">Back to Portal</a>
         </div>
     </nav>
@@ -20,11 +20,12 @@
                 <div class="card">
                     <div class="card-header">Bulk Import Teams (CSV)</div>
                     <div class="card-body">
-                        <p class="text-muted small">Format: <code>section_number,team_number,email</code><br>
-                        Example: <code>1,5,team@email.com</code></p>
-                        <textarea id="csvInput" class="form-control mb-3" rows="8" placeholder="1,1,team1@uni.edu
-1,2,team2@uni.edu
-2,1,team3@uni.edu"></textarea>
+                        <p class="text-muted small">Format: <code>section_number,team_number,telegram_id</code><br>
+                        Example: <code>1,5,@team1</code><br>
+                        <code>2,3,123456789</code></p>
+                        <textarea id="csvInput" class="form-control mb-3" rows="8" placeholder="1,1,@team1
+1,2,@team2
+2,1,123456789"></textarea>
                         <button onclick="bulkImport()" class="btn btn-danger w-100">Import Teams</button>
                         <div id="importResult" class="mt-2"></div>
                     </div>
@@ -36,6 +37,7 @@
                     <div class="card-body">
                         <input type="text" id="newProfName" class="form-control mb-2" placeholder="Name">
                         <input type="email" id="newProfEmail" class="form-control mb-2" placeholder="Email">
+                        <input type="text" id="newProfTelegram" class="form-control mb-2" placeholder="Telegram ID (optional)">
                         <input type="text" id="newProfPin" class="form-control mb-2" placeholder="4-digit PIN" maxlength="4">
                         <button onclick="addProfessor()" class="btn btn-primary w-100">Add Professor</button>
                     </div>
